@@ -4,11 +4,21 @@
  */
 package com.assylias.jbloomberg;
 
+import com.assylias.bigblue.utils.TypedObject;
 import com.bloomberglp.blpapi.CorrelationID;
-import java.util.HashSet;
+import java.util.Collections;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,22 +30,24 @@ import org.slf4j.LoggerFactory;
  */
 final class ConcurrentConflatedEventsManager implements EventsManager {
 
-    private final static Logger logger = LoggerFactory.getLogger(ConcurrentConflatedEventsManager.class);
+    private static final Logger logger = LoggerFactory.getLogger(ConcurrentConflatedEventsManager.class);
+    private static final ExecutorService fireListeners = Executors.newFixedThreadPool(10, new ThreadFactory() {
+        private final AtomicInteger number = new AtomicInteger();
 
+        @Override public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "Bloomberg Listeners Thread #" + number.incrementAndGet());
+            t.setDaemon(true); //daemon to allow JVM exit
+            return t;
+        }
+    });
     private final ConcurrentMap<EventsKey, Listeners> listenersMap = new ConcurrentHashMap<>();
 
     @Override
     public void addEventListener(String ticker, CorrelationID id, RealtimeField field, DataChangeListener lst) {
-        logger.debug("addEventListener({}, {}, {}, {})", new Object[] {ticker, id, field, lst});
+        logger.debug("addEventListener({}, {}, {}, {})", new Object[]{ticker, id, field, lst});
         EventsKey key = EventsKey.of(id, field);
-        Listeners newListeners = new Listeners(ticker);
-        Listeners listenersInMap = listenersMap.putIfAbsent(key, newListeners);
-        if (listenersInMap == null) {
-            listenersInMap = newListeners;
-        }
-        synchronized (key) { //make sure the addition to the set is visible
-            listenersInMap.addListener(lst);
-        }
+        Listeners listenersInMap = listenersMap.computeIfAbsent(key, k -> new Listeners(ticker));
+        listenersInMap.addListener(lst);
     }
 
     @Override
@@ -47,8 +59,8 @@ final class ConcurrentConflatedEventsManager implements EventsManager {
         }
         String ticker = lst.ticker;
         DataChangeEvent evt = null;
-        synchronized (key) { //we can do that because there is only one instance of each possible key
-            TypedObject newValue = TypedObject.of(value);
+        TypedObject newValue = TypedObject.of(value);
+        synchronized (lst) {
             if (!newValue.equals(lst.previousValue)) {
                 evt = new DataChangeEvent(ticker, field.toString(), lst.previousValue, newValue);
                 lst.previousValue = newValue;
@@ -60,7 +72,8 @@ final class ConcurrentConflatedEventsManager implements EventsManager {
     private static class Listeners {
 
         private final String ticker;
-        private final Set<DataChangeListener> listeners = new HashSet<>();
+        //Using a set so that a listener that registers twice is only called once
+        private final Set<DataChangeListener> listeners = Collections.newSetFromMap(new ConcurrentHashMap<>());
         private TypedObject previousValue;
 
         Listeners(String ticker) {
@@ -73,8 +86,26 @@ final class ConcurrentConflatedEventsManager implements EventsManager {
 
         void fireEvent(DataChangeEvent evt) {
             for (DataChangeListener lst : listeners) {
-                lst.dataChanged(evt);
+                //(i)  if a listener gets stuck, the others can still make progress
+                //(ii) if a listener throws an exception, a new thread will be created
+                Future<?> f = fireListeners.submit(() -> lst.dataChanged(evt));
+                monitorListenerExecution(f, lst, evt);
             }
+        }
+
+        void monitorListenerExecution(Future<?> f, DataChangeListener lst, DataChangeEvent evt) {
+            fireListeners.submit(new Callable<Void>() {
+                @Override public Void call() throws Exception {
+                    try {
+                        f.get(1, TimeUnit.SECONDS);
+                    } catch (TimeoutException e) {
+                        logger.warn("Slow listener {} has not processed event {} in one second", lst, evt);
+                    } catch (ExecutionException e) {
+                        logger.error("Listener " + lst + " has thrown exception on event " + evt, e.getCause());
+                    }
+                    return null;
+                  }
+            });
         }
     }
 }

@@ -10,42 +10,39 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import static org.testng.Assert.*;
 import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 public class BloombergSessionAsyncSusbcriptionTest {
+    private static final Logger LOG = LoggerFactory.getLogger(BloombergSessionAsyncSusbcriptionTest.class);
 
-    private static int TIMEOUT = 200;
-    private static CountDownLatch latch;
+    private static final int TIMEOUT = 200;
     private DefaultBloombergSession session;
 
-    @BeforeClass
-    public void beforeClass() {
-    }
-
+    //NOTE: the latch could be moved as a member of the class but that creates some side effects (possibly due to testNG)
     @BeforeMethod(groups = "requires-bloomberg")
-    public void beforeMethod() throws Exception{
-        latch = new CountDownLatch(1);
+    public void beforeMethod() throws Exception {
+        LOG.trace("beforeMethod");
         session = new DefaultBloombergSession();
         session.start();
     }
 
     @AfterMethod(groups = "requires-bloomberg")
     public void afterMethod() {
+        LOG.trace("afterMethod - entry");
         session.stop();
-    }
-
-    @Test(groups = "requires-bloomberg")
-    public void testEmptyList() throws Exception {
-        assertFalse(latch.await(TIMEOUT, TimeUnit.MILLISECONDS));
+        LOG.trace("afterMethod - exit");
     }
 
     @Test(groups = "requires-bloomberg")
     public void testFeed() throws Exception {
-        DataChangeListener lst = getDataChangeListener(LAST_PRICE, ASK, BID_SIZE);
+        LOG.trace("testFeed");
+        CountDownLatch latch = new CountDownLatch(1);
+        DataChangeListener lst = getDataChangeListener(latch, LAST_PRICE, ASK, BID_SIZE);
         SubscriptionBuilder builder = new SubscriptionBuilder()
                 .addSecurity("VGA Index")
                 .addSecurity("EUR Curncy")
@@ -62,7 +59,9 @@ public class BloombergSessionAsyncSusbcriptionTest {
      */
     @Test(groups = "requires-bloomberg")
     public void testFeedNewAdditions() throws Exception {
-        DataChangeListener lst = getDataChangeListener("GBP Curncy");
+        LOG.trace("testFeedNewAdditions");
+        CountDownLatch latch = new CountDownLatch(1);
+        DataChangeListener lst = getDataChangeListener(latch, "GBP Curncy");
         SubscriptionBuilder builder = new SubscriptionBuilder()
                 .addSecurity("VGA Index")
                 .addSecurity("EUR Curncy")
@@ -72,7 +71,7 @@ public class BloombergSessionAsyncSusbcriptionTest {
                 .addListener(lst);
 
         session.subscribe(builder);
-        assertFalse(latch.await(50, TimeUnit.MILLISECONDS)); //only works if the GBP has been caught
+        assertFalse(latch.await(50, TimeUnit.MILLISECONDS)); //GBP hasn't been registered yet so no event should arrive
 
         builder = new SubscriptionBuilder()
                 .addSecurity("GBP Curncy")
@@ -88,7 +87,9 @@ public class BloombergSessionAsyncSusbcriptionTest {
      */
     @Test(groups = "requires-bloomberg")
     public void testWrongTicker() throws Exception {
-        DataChangeListener lst = getDataChangeListener();
+        LOG.trace("testWrongTicker");
+        CountDownLatch latch = new CountDownLatch(1);
+        DataChangeListener lst = getDataChangeListener(latch);
         SubscriptionBuilder builder = new SubscriptionBuilder()
                 .addSecurity("WHAT TICKER IS THAT")
                 .addSecurity("EUR Curncy")
@@ -98,33 +99,24 @@ public class BloombergSessionAsyncSusbcriptionTest {
         assertTrue(latch.await(TIMEOUT, TimeUnit.SECONDS));
     }
 
-    private DataChangeListener getDataChangeListener() {
-        return new DataChangeListener() {
-            @Override
-            public void dataChanged(DataChangeEvent e) {
+    private DataChangeListener getDataChangeListener(CountDownLatch latch) {
+        return (e) -> latch.countDown();
+    }
+
+    private DataChangeListener getDataChangeListener(CountDownLatch latch, String... tickers) {
+        final Set<String> tickerSet = new HashSet<>(Arrays.asList(tickers));
+        return (DataChangeEvent e) -> {
+            if (tickerSet.contains(e.getSource())) {
                 latch.countDown();
             }
         };
     }
-    private DataChangeListener getDataChangeListener(String... tickers) {
-        final Set<String> tickerSet = new HashSet<> (Arrays.asList(tickers));
-        return new DataChangeListener() {
-            @Override
-            public void dataChanged(DataChangeEvent e) {
-                if (tickerSet.contains(e.getSource())) {
-                    latch.countDown();
-                }
-            }
-        };
-    }
-    private DataChangeListener getDataChangeListener(final RealtimeField... fields) {
-        final Set<RealtimeField> fieldSet = new HashSet<> (Arrays.asList(fields));
-        return new DataChangeListener() {
-            @Override
-            public void dataChanged(DataChangeEvent e) {
-                if (fieldSet.contains(RealtimeField.valueOf(e.getDataName()))) {
-                    latch.countDown();
-                }
+
+    private DataChangeListener getDataChangeListener(CountDownLatch latch, final RealtimeField... fields) {
+        final Set<RealtimeField> fieldSet = new HashSet<>(Arrays.asList(fields));
+        return (e) -> {
+            if (fieldSet.contains(RealtimeField.valueOf(e.getDataName()))) {
+                latch.countDown();
             }
         };
     }

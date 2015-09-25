@@ -25,6 +25,8 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import static com.assylias.jbloomberg.DefaultBloombergSession.SessionState.*;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,7 +80,7 @@ public class DefaultBloombergSession implements BloombergSession {
      * Collection that keeps track of services that have been asynchronously started. They might not be started yet.
      */
     private final Set<BloombergServiceType> openingServices = EnumSet.noneOf(BloombergServiceType.class);
-    private final ExecutorService executor = Executors.newCachedThreadPool(new ThreadFactory() {
+    private final ExecutorService executor = Executors.newFixedThreadPool(10, new ThreadFactory() {
         private final AtomicInteger threadId = new AtomicInteger();
 
         @Override
@@ -86,23 +88,21 @@ public class DefaultBloombergSession implements BloombergSession {
             return new Thread(r, "Bloomberg Session # " + sessionId + " - " + threadId.incrementAndGet());
         }
     });
+    private final EventsManager eventsManager = new ConcurrentConflatedEventsManager();
     private final SubscriptionManager subscriptionManager = new SubscriptionManager(subscriptionDataQueue,
-            new ConcurrentConflatedEventsManager());
+            eventsManager);
 
     public DefaultBloombergSession() {
         session = new Session(sessionOptions, eventHandler);
     }
 
-    /**
-     * Starts a bloomberg session asynchronously. If the bbcomm process is not running, this method will try to start
-     * it.<br> If the session has already been started, does nothing.
-     * <p/>
-     * @throws BloombergException    if the bbcomm process is not running or could not be started, or if the session
-     *                               could not be started asynchronously
-     * @throws IllegalStateException if the session is already started
-     */
     @Override
     public synchronized void start() throws BloombergException {
+        start(null);
+    }
+
+    @Override
+    public synchronized void start(Consumer<BloombergException> onStartupFailure) throws BloombergException {
         if (state.get() != NEW) {
             throw new IllegalStateException("Session has already been started: " + this);
         }
@@ -119,11 +119,10 @@ public class DefaultBloombergSession implements BloombergSession {
                     sessionStartup.countDown();
                 }
             });
-            eventHandler.onSessionStartupFailure(new Runnable() {
-                @Override public void run() {
-                    state.set(STARTUP_FAILED);
-                    sessionStartup.countDown();
-                }
+            eventHandler.onSessionStartupFailure((BloombergException e) -> {
+                state.set(STARTUP_FAILED);
+                sessionStartup.countDown();
+                if (onStartupFailure != null) onStartupFailure.accept(e);
             });
             if (!state.compareAndSet(NEW, STARTING)) {
                 throw new AssertionError("State was expected to be NEW but found " + state.get());
@@ -142,6 +141,8 @@ public class DefaultBloombergSession implements BloombergSession {
     /**
      * Closes the session. If the session has not been started yet, does nothing. This call will block until the session
      * is actually stopped.<br>
+     * If the session startup encountered a problem (typically: can't connect to a Bloomberg session), this may block
+     * for a few seconds....
      * A stopped session can't be restarted.
      */
     @Override
@@ -152,10 +153,12 @@ public class DefaultBloombergSession implements BloombergSession {
         }
         try {
             logger.info("Stopping Bloomberg session #{}", sessionId);
-            state.set(STOPPED);
-            executor.shutdown();
+            boolean started = sessionStartup.await(1, TimeUnit.SECONDS); //with 3.6.1.0, if the session is not started yet, the call to stop can block
+            if (!started) logger.info("I waited for 1 second but Bloomberg session #{} is still not started...");
+            executor.shutdownNow();
             subscriptionManager.stop(this);
-            session.stop(AbstractSession.StopOption.SYNC);
+            session.stop();//started ? SYNC : ASYNC); //if not started, something's wrong, don't spend to much time here...
+            state.set(STOPPED);
             logger.info("Stopped Bloomberg session #{}", sessionId);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

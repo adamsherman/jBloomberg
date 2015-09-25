@@ -5,8 +5,10 @@
 package com.assylias.jbloomberg;
 
 import com.bloomberglp.blpapi.CorrelationID;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
 
 /**
  * An immutable, thread safe class that holds a pair of CorrelationID and RealtimeField to uniquely identify
@@ -25,9 +27,7 @@ final class EventsKey {
      * field.
      */
     public static EventsKey of(CorrelationID id, RealtimeField field) {
-        EventsKey key = new EventsKey(id, field);
-        EventsKey unique = keys.putIfAbsent(key, key);
-        return unique != null ? unique : key;
+        return keys.computeIfAbsent(new EventsKey(id, field), Function.identity());
     }
 
     private EventsKey(CorrelationID id, RealtimeField field) {
@@ -41,29 +41,16 @@ final class EventsKey {
         return hash;
     }
 
-    /**
-     * Assumes that obj is of the right type and is not null
-     */
     @Override
     public boolean equals(Object obj) {
+        if (obj == null) return false;
+        if (getClass() != obj.getClass()) return false;
         final EventsKey other = (EventsKey) obj;
-        if (this.hash != other.hash) {
-            return false;
-        }
-        if (!this.id.equals(other.id)) {
-            return false;
-        }
-        if (this.field != other.field) {
-            return false;
-        }
-        return true;
+        return Objects.equals(this.id, other.id) && this.field == other.field;
     }
 
     private int getHashCode(CorrelationID id, RealtimeField field) {
-        int hash = 7;
-        hash = 89 * hash + id.hashCode();
-        hash = 89 * hash + field.hashCode();
-        return hash;
+        return Objects.hash(id, field);
     }
 
     @Override

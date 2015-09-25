@@ -6,12 +6,14 @@ package com.assylias.jbloomberg;
 
 import com.bloomberglp.blpapi.Request;
 import com.google.common.base.Preconditions;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Currency;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
-import org.joda.time.DateTime;
 
 /**
  * This class enables to build a HistoricalData request while ensuring argument safety. Typically, instead of passing
@@ -29,8 +31,8 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
     //Required parameters
     private final Set<String> tickers = new HashSet<>();
     private final Set<String> fields = new HashSet<>();
-    private final DateTime startDate;
-    private final DateTime endDate;
+    private final LocalDate startDate;
+    private final LocalDate endDate;
     //Optional parameters
     private PeriodicityAdjustment periodicityAdjustment = PeriodicityAdjustment.ACTUAL;
     private Period period = Period.DAILY;
@@ -42,13 +44,14 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
     private boolean adjAbnormal = false;
     private boolean adjSplit = false;
     private boolean adjDefault = false;
+    private final Map<String, String> overrides = new HashMap<>();
 
     /**
      * Equivalent to calling
      * <code> new HistoricalRequestBuilder(Arrays.asList(ticker), Arrays.asList(field), startDate, endDate);
      * </code>
      */
-    public HistoricalRequestBuilder(String ticker, String field, DateTime startDate, DateTime endDate) {
+    public HistoricalRequestBuilder(String ticker, String field, LocalDate startDate, LocalDate endDate) {
         this(Arrays.asList(ticker), Arrays.asList(field), startDate, endDate);
     }
 
@@ -57,7 +60,7 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
      * <code> new HistoricalRequestBuilder(Arrays.asList(ticker), fields, startDate, endDate);
      * </code>
      */
-    public HistoricalRequestBuilder(String ticker, Collection<String> fields, DateTime startDate, DateTime endDate) {
+    public HistoricalRequestBuilder(String ticker, Collection<String> fields, LocalDate startDate, LocalDate endDate) {
         this(Arrays.asList(ticker), fields, startDate, endDate);
     }
 
@@ -66,7 +69,7 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
      * <code> new HistoricalRequestBuilder(tickers, Arrays.asList(field), startDate, endDate);
      * </code>
      */
-    public HistoricalRequestBuilder(Collection<String> tickers, String field, DateTime startDate, DateTime endDate) {
+    public HistoricalRequestBuilder(Collection<String> tickers, String field, LocalDate startDate, LocalDate endDate) {
         this(tickers, Arrays.asList(field), startDate, endDate);
     }
 
@@ -84,7 +87,7 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
      * @throws IllegalArgumentException if <ul> <li> any of the collections is empty or contains empty strings <li> the
      *                                  start date is strictly after the end date </ul>
      */
-    public HistoricalRequestBuilder(Collection<String> tickers, Collection<String> fields, DateTime startDate, DateTime endDate) {
+    public HistoricalRequestBuilder(Collection<String> tickers, Collection<String> fields, LocalDate startDate, LocalDate endDate) {
         this.startDate = Preconditions.checkNotNull(startDate, "The start date must not be null");
         this.endDate = Preconditions.checkNotNull(endDate, "The end date must not be null");
         Preconditions.checkArgument(!startDate.isAfter(endDate), "The start date (%s) must not be after the end date (%s)", startDate, endDate);
@@ -186,6 +189,19 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
         return this;
     }
 
+    /**
+     * Adjust historical pricing and/or volume are adjusted to reflect: Spin-Offs, Stock Splits/Consolidations, Stock
+     * Dividend/Bonus, Rights Offerings/ Entitlement.
+     */
+    public HistoricalRequestBuilder addOverride(String field, String value) {
+        Preconditions.checkNotNull(field, "Field cannot be null when adding overrides");
+        Preconditions.checkNotNull(value, "Value cannot be null when adding overrides");
+        Preconditions.checkArgument(!field.isEmpty(), "Field cannot be empty when adding overrides");
+        Preconditions.checkArgument(!value.isEmpty(), "Value cannot be empty when adding overrides");
+        overrides.put(field, value);
+        return this;
+    }
+
     @Override
     public String toString() {
         return "HistoricalQueryBuilder{" + "tickers=" + tickers + ", fields=" + fields + ", startDate=" + startDate + ", endDate=" + endDate + ", periodicityAdjustment=" + periodicityAdjustment + ", period=" + period + ", currency=" + currency + ", days=" + days + ", fill=" + fill + ", points=" + points + ", adjNormal=" + adjNormal + ", adjAbnormal=" + adjAbnormal + ", adjSplit=" + adjSplit + ", adjDefault=" + adjDefault + '}';
@@ -205,6 +221,7 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
     protected void buildRequest(Request request) {
         addCollectionToElement(request, tickers, "securities");
         addCollectionToElement(request, fields, "fields");
+        addOverrides(request, overrides);
 
         request.set("periodicityAdjustment", periodicityAdjustment.toString());
         request.set("periodicitySelection", period.toString());
@@ -220,8 +237,8 @@ public final class HistoricalRequestBuilder extends AbstractRequestBuilder<Histo
         request.set("adjustmentAbnormal", adjAbnormal);
         request.set("adjustmentSplit", adjSplit);
         request.set("adjustmentFollowDPDF", adjDefault);
-        request.set("startDate", startDate.toString(BB_REQUEST_DATE_FORMATTER));
-        request.set("endDate", endDate.toString(BB_REQUEST_DATE_FORMATTER));
+        request.set("startDate", startDate.format(BB_REQUEST_DATE_FORMATTER));
+        request.set("endDate", endDate.format(BB_REQUEST_DATE_FORMATTER));
     }
 
     @Override

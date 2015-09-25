@@ -4,6 +4,7 @@
  */
 package com.assylias.jbloomberg;
 
+import com.bloomberglp.blpapi.Datetime;
 import com.bloomberglp.blpapi.Element;
 import com.bloomberglp.blpapi.ElementIterator;
 import com.bloomberglp.blpapi.Schema;
@@ -11,7 +12,13 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,7 +30,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import org.joda.time.DateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -63,10 +69,20 @@ final class BloombergUtils {
             return field.getValueAsInt64();
         } else if (field.datatype() == Schema.Datatype.STRING) {
             return field.getValueAsString();
-        } else if (field.datatype() == Schema.Datatype.DATE
-                || field.datatype() == Schema.Datatype.DATETIME
-                || field.datatype() == Schema.Datatype.TIME) {
-            return new DateTime(field.getValueAsDate().calendar());
+        } else if (field.datatype() == Schema.Datatype.DATE) {
+            Datetime dt = field.getValueAsDate();
+            return LocalDate.of(dt.year(), dt.month(), dt.dayOfMonth());
+        } else if (field.datatype() == Schema.Datatype.TIME) {
+            Datetime dt = field.getValueAsDatetime();
+            Calendar cal = dt.calendar(); //returns a calendar with TZ = UTC
+            return LocalTime.of(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND), dt.nanosecond())
+                    .atOffset(ZoneOffset.UTC);
+        } else if (field.datatype() == Schema.Datatype.DATETIME) {
+            Datetime dt = field.getValueAsDatetime();
+            Calendar cal = dt.calendar(); //returns a calendar with TZ = UTC
+            ZonedDateTime zdt = ZonedDateTime.ofInstant(cal.toInstant(), ZoneId.of("Z"));
+            if (!dt.hasParts(Datetime.DATE)) return zdt.toOffsetDateTime().toOffsetTime();
+            else return zdt;
         } else if (field.isArray()) {
             List<Object> list = new ArrayList<>(field.numValues());
             for (int i = 0; i < field.numValues(); i++) {
@@ -111,33 +127,28 @@ final class BloombergUtils {
     }
 
     private static boolean startBloombergProcess() {
-        Callable<Boolean> startBloombergProcess = getStartingCallable();
+        Callable<Boolean> startBloombergProcess = BloombergUtils::getStartingCallable;
         isBbcommStarted = getResultWithTimeout(startBloombergProcess, 1, TimeUnit.SECONDS);
         return isBbcommStarted;
     }
 
-    private static Callable<Boolean> getStartingCallable() {
-        return new Callable<Boolean>() {
-            @Override
-            public Boolean call() throws Exception {
-                logger.info("Starting {} manually", BBCOMM_PROCESS);
-                ProcessBuilder pb = new ProcessBuilder(BBCOMM_PROCESS);
-                pb.directory(new File(BBCOMM_FOLDER));
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream(), Charset.forName("UTF-8")))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        logger.info("{} > {}", BBCOMM_PROCESS, line);
-                        if (line.toLowerCase().contains("started")) {
-                            logger.info("{} is started", BBCOMM_PROCESS);
-                            return true;
-                        }
-                    }
-                    return false;
+    private static Boolean getStartingCallable() throws Exception {
+        logger.info("Starting {} manually", BBCOMM_PROCESS);
+        ProcessBuilder pb = new ProcessBuilder(BBCOMM_PROCESS);
+        pb.directory(new File(BBCOMM_FOLDER));
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream(), Charset.forName("UTF-8")))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                logger.info("{} > {}", BBCOMM_PROCESS, line);
+                if (line.toLowerCase().contains("started")) {
+                    logger.info("{} is started", BBCOMM_PROCESS);
+                    return true;
                 }
             }
-        };
+            return false;
+        }
     }
 
     private static boolean getResultWithTimeout(Callable<Boolean> startBloombergProcess, int timeout, TimeUnit timeUnit) {
